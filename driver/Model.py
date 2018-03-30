@@ -84,12 +84,17 @@ class Decoder(nn.Module):
         super(Decoder, self).__init__()
         self.vocab = vocab
         self.config = config
-        self.output = nn.Linear(in_features= config.lstm_hiddens * 2 * 4,
+        self.mlp = NonLinear(
+            input_size = config.lstm_hiddens * 2 * 4,
+            hidden_size = config.hidden_size,
+            activation = nn.LeakyReLU(0.1))
+        self.output = nn.Linear(in_features= config.hidden_size,
                                 out_features=len(vocab._id2ac))
 
     def forward(self, batch_hidden_state, candidate_actions):
         assert batch_hidden_state.size()[0] == len(candidate_actions)
-        outputs = self.output.forward(batch_hidden_state)
+        mlp_hidden = self.mlp.forward(batch_hidden_state)
+        outputs = self.output.forward(mlp_hidden)
         for (idx, actions) in enumerate(candidate_actions):
             candidate_index = set()
             for (idy, ac) in enumerate(actions):
