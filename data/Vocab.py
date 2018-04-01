@@ -88,13 +88,22 @@ class Vocab(object):
             print("serious bug: actions dumplicated, please check!")
         print("action num: ", len(self._ac2id))
         print("action: ", end=' ')
-        self.act_left = []
-        self.act_right = []
-        for ac in self._id2ac:
+        self.mask_shift = np.array([False] * self.ac_size)
+        self.mask_arc_left = np.array([False] * self.ac_size)
+        self.mask_arc_right = np.array([False] * self.ac_size)
+        self.mask_pop_root = np.array([False] * self.ac_size)
+        self.mask_no_action = np.array([False] * self.ac_size)
+        for (idx, ac) in enumerate(self._id2ac):
+            if ac.is_shift():
+                self.mask_shift[idx] = True
             if ac.is_arc_left():
-                self.act_left.append(ac)
+                self.mask_arc_left[idx] = True
             if ac.is_arc_right():
-                self.act_right.append(ac)
+                self.mask_arc_right[idx] = True
+            if ac.is_finish():
+                self.mask_pop_root[idx] = True
+            if ac.is_none():
+                self.mask_no_action[idx] = True
             print(ac.str(self), end= ', ')
         print()
 

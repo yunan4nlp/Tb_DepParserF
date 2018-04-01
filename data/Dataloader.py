@@ -10,6 +10,14 @@ def read_corpus(file_path, vocab=None):
             data.append(sentence)
     return data
 
+def read_train_corpus(file_path, vocab=None):
+    data = []
+    with open(file_path, 'r') as infile:
+        for sentence in readDepTree(infile, vocab):
+            if DepTree(sentence).isProj():
+                data.append(sentence)
+    return data
+
 def sentences_numberize(sentences, vocab):
     for sentence in sentences:
         yield sentence2id(sentence, vocab)
@@ -91,17 +99,28 @@ def batch_data_variable(batch, vocab):
 def batch_data_variable_actions(batch, vocab):
     batch_sent = []
     batch_actions = []
-    batch_states = []
     for inst in batch:
         batch_sent.append(inst[0])
         batch_actions.append(inst[1])
-        batch_states.append(inst[2])
     acs = []
+    max_step = -1
     for actions in batch_actions:
         ac = np.zeros(len(actions), dtype=np.int32)
+        tmp_step = len(ac)
+        if max_step < tmp_step:
+            max_step = tmp_step
         for (idx, action) in enumerate(actions):
             ac[idx] = vocab.ac2id(action)
         acs.append(ac)
+
+    batch_step_actions = []
+    for idx in range(0, max_step):
+        step_actions = []
+        for actions in batch_actions:
+            if idx < len(actions):
+                step_actions.append(actions[idx])
+        batch_step_actions.append(step_actions)
+
 
     length = len(batch_sent[0])
     batch_size = len(batch_sent)
@@ -134,7 +153,7 @@ def batch_data_variable_actions(batch, vocab):
         b += 1
         heads.append(head)
         rels.append(rel)
-    return words, extwords, tags, heads, rels, lengths, masks, batch_sent, batch_actions, acs, batch_states
+    return words, extwords, tags, heads, rels, lengths, masks, batch_sent, batch_actions, acs, batch_step_actions
 
 def batch_variable_depTree(trees, heads, rels, lengths, vocab):
     for tree, head, rel, length in zip(trees, heads, rels, lengths):

@@ -4,6 +4,7 @@ from transition.AtomFeat import *
 from data.Dependency import *
 import torch
 from torch.autograd import Variable
+import numpy as np
 
 max_length = 512
 
@@ -21,7 +22,6 @@ class State:
         self._is_gold = True
         self._inst = None
         self._atom_feat = AtomFeat()
-        self._pre_state = None
         self._pre_action = Action(CODE.NO_ACTION, -1)
 
     def ready(self, sentence, vocab):
@@ -35,7 +35,6 @@ class State:
         self._is_gold = True
         self._is_start = True
         self._pre_action = Action(CODE.NO_ACTION, -1)
-        self._pre_state = None
 
         self.done_mark()
 
@@ -134,29 +133,24 @@ class State:
             print(" error state ")
 
     def get_candidate_actions(self, vocab):
-        candidate_actions = []
-        ac = Action(CODE.NO_ACTION, -1)
+        mask = np.array([False]*vocab.ac_size)
         if self.is_end():
-            ac.set(CODE.NO_ACTION, -1)
-            candidate_actions.append(ac)
+            mask = mask | vocab.mask_no_action
 
         if self.allow_shift():
-            ac.set(CODE.SHIFT, -1)
-            candidate_actions.append(ac)
+            mask = mask | vocab.mask_shift
 
         if self.allow_arc_left():
-            candidate_actions.extend(vocab.act_left)
+            mask = mask | vocab.mask_arc_left
 
         if self.allow_arc_right():
-            candidate_actions.extend(vocab.act_right)
+            mask = mask | vocab.mask_arc_right
 
         if self.allow_pop_root():
-            ac.set(CODE.POP_ROOT, vocab.ROOT)
-            candidate_actions.append(ac)
-        return candidate_actions
+            mask = mask | vocab.mask_pop_root
+        return ~mask
 
     def copy_state(self, next_state):
-        next_state._pre_state = self
         next_state._inst = self._inst
         next_state._word_size = self._word_size
         next_state._stack[0:self._stack_size] = (self._stack[0:self._stack_size])

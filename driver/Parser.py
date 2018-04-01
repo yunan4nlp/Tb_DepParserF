@@ -2,9 +2,10 @@ from transition.State import *
 import numpy as np
 from torch.autograd import Variable
 import torch.nn.functional as F
+import time
 
 class TransitionBasedParser(object):
-    def __init__(self, encoder, decoder, root_id, config):
+    def __init__(self, encoder, decoder, root_id, config, ac_size):
         self.config = config
         self.encoder = encoder
         self.decoder = decoder
@@ -12,11 +13,13 @@ class TransitionBasedParser(object):
         encoder_p = next(filter(lambda p: p.requires_grad, encoder.parameters()))
         self.use_cuda = encoder_p.is_cuda
         self.bucket = Variable(torch.zeros(self.config.train_batch_size, 1, self.config.lstm_hiddens * 2)).type(torch.FloatTensor)
+        self.cut = Variable(torch.zeros(self.config.train_batch_size, ac_size)).type(torch.FloatTensor)
         self.index = Variable(torch.zeros(self.config.train_batch_size * 4)).type(torch.LongTensor)
         self.device = encoder_p.get_device() if self.use_cuda else None
         if self.use_cuda:
             self.bucket = self.bucket.cuda(self.device)
             self.index = self.index.cuda(self.device)
+            self.cut = self.cut.cuda(self.device)
         self.gold_pred_pairs = []
         self.training = True
         if self.config.train_batch_size > self.config.test_batch_size:
@@ -62,7 +65,7 @@ class TransitionBasedParser(object):
         return total_num, correct
 
 
-    def decode(self, batch_data, batch_gold_states, bacth_gold_actions, vocab):
+    def decode(self, batch_data, batch_step_actions, vocab):
         decoder_scores = []
         self.gold_pred_pairs.clear()
 
@@ -77,13 +80,13 @@ class TransitionBasedParser(object):
             start_state.clear()
             start_state.ready(batch_data[idx], vocab)
             self.step[idx] = 0
-
+        global_step = 0
         while not self.all_states_are_finished():
             hidden_states = self.batch_prepare()
             if self.training:
-                gold_actions = self.get_gold_actions(bacth_gold_actions)
-            all_candidates = self.get_candidates(vocab)
-            action_scores = self.decoder.forward(hidden_states, all_candidates)
+                gold_actions = batch_step_actions[global_step]
+            self.get_cut(vocab)
+            action_scores = self.decoder.forward(hidden_states, self.cut)
             pred_ac_ids = self.get_predicted_ac_id(action_scores)
             pred_actions = self.get_predict_actions(pred_ac_ids, vocab)
             if self.training:
@@ -92,6 +95,7 @@ class TransitionBasedParser(object):
                 decoder_scores.append(action_scores.unsqueeze(1))
             else:
                 self.move(pred_actions, vocab)
+            global_step += 1
         if self.training:
             self.decoder_outputs = torch.cat(decoder_scores, 1)
 
@@ -142,21 +146,22 @@ class TransitionBasedParser(object):
         return h_s
 
     def get_predicted_ac_id(self, action_scores):
+        action_scores = action_scores.data.cpu().numpy()
         ac_ids = []
         for idx in range(0, self.b):
             cur_states = self.batch_states[idx]
             if not cur_states[self.step[idx]].is_end():
-                ac_id = np.argmax(action_scores.data[idx])
+                ac_id = np.argmax(action_scores[idx])
                 ac_ids.append(ac_id)
         return ac_ids
 
     def move(self, pred_actions, vocab):
-        count = 0
-        for idx in range(0, self.b):
-            cur_states = self.batch_states[idx]
-            if not cur_states[self.step[idx]].is_end():
-                count += 1
-        assert len(pred_actions) == count
+        #count = 0
+        #for idx in range(0, self.b):
+            #cur_states = self.batch_states[idx]
+            #if not cur_states[self.step[idx]].is_end():
+                #count += 1
+        #assert len(pred_actions) == count
         offset = 0
         for idx in range(0, self.b):
             cur_states = self.batch_states[idx]
@@ -164,22 +169,23 @@ class TransitionBasedParser(object):
             if not cur_states[cur_step].is_end():
                 next_state = self.batch_states[idx][cur_step + 1]
                 cur_states[cur_step].move(next_state, pred_actions[offset])
-                cur_states.append(next_state)
                 offset += 1
                 self.step[idx] += 1
 
 
-    def get_candidates(self, vocab):
-        all_candidates = []
+    def get_cut(self, vocab):
+        all_mask = np.array([[False] * vocab.ac_size] * self.b)
         for idx in range(0, self.b):
             cur_states = self.batch_states[idx]
             cur_step = self.step[idx]
             if not cur_states[cur_step].is_end():
-                candidates = cur_states[cur_step].get_candidate_actions(vocab)
-                all_candidates.append(candidates)
-            else:
-                all_candidates.append([])
-        return all_candidates
+                mask = cur_states[cur_step].get_candidate_actions(vocab)
+                all_mask[idx] = mask
+        if self.b != self.cut.size()[0]:
+            self.cut = Variable(torch.zeros(self.b, vocab.ac_size)).type(torch.FloatTensor)
+            if self.use_cuda:
+                self.cut = self.cut.cuda(self.device)
+        self.cut.data.copy_(torch.from_numpy(all_mask * -1e+20))
 
 def _model_var(model, x):
     p = next(filter(lambda p: p.requires_grad, model.parameters()))

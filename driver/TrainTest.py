@@ -16,7 +16,6 @@ import pickle
 
 def get_gold_actions(data, vocab):
     all_actions = []
-    all_states = []
     states = []
     for idx in range(0, 1024):
         states.append(State())
@@ -34,17 +33,16 @@ def get_gold_actions(data, vocab):
             step += 1
         all_actions.append(actions)
         result = states[step].get_result(vocab)
-        all_states.append(states[0:step])
         arc_total, arc_correct, rel_total, rel_correct = evalDepTree(sentence, result)
         assert arc_total == arc_correct and rel_total == rel_correct
         assert len(actions) == (len(sentence) - 1) * 2
-    return all_states, all_actions
+    return all_actions
 
-def inst(data, actions, states):
-    assert len(data) == len(actions) == len(states)
+def inst(data, actions):
+    assert len(data) == len(actions)
     inst = []
     for idx in range(len(data)):
-        inst.append((data[idx], actions[idx], states[idx]))
+        inst.append((data[idx], actions[idx]))
     return inst
 
 def train(train_inst, dev_data, test_data, parser, vocab, config):
@@ -61,14 +59,14 @@ def train(train_inst, dev_data, test_data, parser, vocab, config):
 
         overall_action_correct,  overall_total_action = 0, 0
         for onebatch in data_iter(train_inst, config.train_batch_size, True):
-            words, extwords, tags, heads, rels, lengths, masks, sents, gold_actions, acs, gold_states= \
+            words, extwords, tags, heads, rels, lengths, masks, sents, gold_actions, acs, gold_step_actions= \
                 batch_data_variable_actions(onebatch, vocab)
             parser.encoder.train()
             parser.decoder.train()
             parser.training = True
             #with torch.autograd.profiler.profile() as prof:
             parser.encode(words, extwords, tags, masks)
-            parser.decode(sents, gold_states, gold_actions, vocab)
+            parser.decode(sents, gold_step_actions, vocab)
             loss = parser.compute_loss(acs)
             loss = loss / config.update_every
             loss_value = loss.data.cpu().numpy()
@@ -94,19 +92,20 @@ def train(train_inst, dev_data, test_data, parser, vocab, config):
                 parser.decoder.zero_grad()
                 global_step += 1
 
-        arc_correct, rel_correct, arc_total, dev_uas, dev_las = \
-        evaluate(dev_data, parser, vocab, config.dev_file + '.' + str(global_step))
-        print("Dev: uas = %d/%d = %.2f, las = %d/%d =%.2f" % \
-                (arc_correct, arc_total, dev_uas, rel_correct, arc_total, dev_las))
-        arc_correct, rel_correct, arc_total, test_uas, test_las = \
-        evaluate(test_data, parser, vocab, config.test_file + '.' + str(global_step))
-        print("Test: uas = %d/%d = %.2f, las = %d/%d =%.2f" % \
-                (arc_correct, arc_total, test_uas, rel_correct, arc_total, test_las))
-        if dev_uas > best_UAS:
-            print("Exceed best uas: history = %.2f, current = %.2f" % (best_UAS, dev_uas))
-            best_UAS = dev_uas
-        if config.save_after > 0 and iter > config.save_after:
-            torch.save(parser.model.state_dict(), config.save_model_path)
+            if batch_iter % config.validate_every == 0 or batch_iter == batch_num:
+                arc_correct, rel_correct, arc_total, dev_uas, dev_las = \
+                evaluate(dev_data, parser, vocab, config.dev_file + '.' + str(global_step))
+                print("Dev: uas = %d/%d = %.2f, las = %d/%d =%.2f" % \
+                        (arc_correct, arc_total, dev_uas, rel_correct, arc_total, dev_las))
+                arc_correct, rel_correct, arc_total, test_uas, test_las = \
+                evaluate(test_data, parser, vocab, config.test_file + '.' + str(global_step))
+                print("Test: uas = %d/%d = %.2f, las = %d/%d =%.2f" % \
+                        (arc_correct, arc_total, test_uas, rel_correct, arc_total, test_las))
+                if dev_uas > best_UAS:
+                    print("Exceed best uas: history = %.2f, current = %.2f" % (best_UAS, dev_uas))
+                    best_UAS = dev_uas
+                if config.save_after > 0 and iter > config.save_after:
+                    torch.save(parser.model.state_dict(), config.save_model_path)
 
 
 def evaluate(data, parser, vocab, outputFile):
@@ -121,7 +120,7 @@ def evaluate(data, parser, vocab, outputFile):
             batch_data_variable(onebatch, vocab)
         count = 0
         parser.encode(words, extwords, tags, masks)
-        parser.decode(onebatch, None, None, vocab)
+        parser.decode(onebatch, None, vocab)
         for idx in range(0, parser.b):
             cur_states = parser.batch_states[idx]
             cur_step = parser.step[idx]
@@ -141,7 +140,6 @@ def evaluate(data, parser, vocab, outputFile):
     end = time.time()
     during_time = float(end - start)
     print("sentence num: %d,  parser time = %.2f " % (len(data), during_time))
-
     return arc_correct_test, rel_correct_test, arc_total_test, uas, las
 
 
@@ -193,7 +191,7 @@ if __name__ == '__main__':
 
     vocab = creatVocab(config.train_file, config.min_occur_count)
     vec = vocab.load_pretrained_embs(config.pretrained_embeddings_file)
-
+    pickle.dump(vocab, open(config.save_vocab_path, 'wb'))
     torch.set_num_threads(args.thread)
 
     config.use_cuda = False
@@ -201,27 +199,27 @@ if __name__ == '__main__':
     print("\nGPU using status: ", config.use_cuda)
 
 
-    train_data = read_corpus(config.train_file, vocab)
+    train_data = read_train_corpus(config.train_file, vocab)
     dev_data = read_corpus(config.dev_file, vocab)
     test_data = read_corpus(config.test_file, vocab)
 
     start_a = time.time()
-    train_states, train_actions = get_gold_actions(train_data, vocab)
+    train_actions = get_gold_actions(train_data, vocab)
     print("Get Action Time: ", time.time() - start_a)
 
     assert len(train_data) == len(train_actions)
 
     vocab.create_action_table(train_actions)
 
-    train_insts = inst(train_data, train_actions, train_states)
+    train_insts = inst(train_data, train_actions)
 
     encoder = Encoder(vocab, config, vec)
     decoder = Decoder(vocab, config)
 
     if config.use_cuda:
         torch.backends.cudnn.enabled = True
-        torch.backends.cudnn.benchmark = True
+        #torch.backends.cudnn.benchmark = True
         encoder = encoder.cuda()
         decoder = decoder.cuda()
-    parser = TransitionBasedParser(encoder, decoder, vocab.ROOT, config)
+    parser = TransitionBasedParser(encoder, decoder, vocab.ROOT, config, vocab.ac_size)
     train(train_insts, dev_data, test_data, parser, vocab, config)

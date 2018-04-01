@@ -91,19 +91,10 @@ class Decoder(nn.Module):
         self.output = nn.Linear(in_features= config.hidden_size,
                                 out_features=len(vocab._id2ac))
 
-    def forward(self, batch_hidden_state, candidate_actions):
-        assert batch_hidden_state.size()[0] == len(candidate_actions)
+    def forward(self, batch_hidden_state, cut):
         mlp_hidden = self.mlp.forward(batch_hidden_state)
         outputs = self.output.forward(mlp_hidden)
-        for (idx, actions) in enumerate(candidate_actions):
-            candidate_index = set()
-            for (idy, ac) in enumerate(actions):
-                index = self.vocab._ac2id[ac]
-                assert index < len(self.vocab._ac2id)
-                candidate_index.add(index)
-            for idy in range(0, self.vocab.ac_size):
-                if idy not in candidate_index:
-                    outputs.data[idx][idy] = -1e+20
+        outputs = outputs + cut
         return outputs
 
 '''
